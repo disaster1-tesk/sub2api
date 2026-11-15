@@ -1883,3 +1883,58 @@ func buildGeminiUsageProgress(used, limit int64, resetAt time.Time, tokens int64
 func (s *AccountUsageService) GetAccountWindowStats(ctx context.Context, accountID int64, startTime time.Time) (*usagestats.AccountStats, error) {
 	return s.usageLogRepo.GetAccountWindowStats(ctx, accountID, startTime)
 }
+
+// GetAccountWindowStatsByStart 批量获取多个账号在各自窗口起点之后的使用统计。
+// 窗口起点通常对齐到整点，账号按起点分组后每组只发一条聚合 SQL；
+// 仓储不支持批量或某组批量查询失败时，该组回退为按账号单查。
+// 允许部分失败：查询失败的账号不会出现在返回值里。
+func (s *AccountUsageService) GetAccountWindowStatsByStart(ctx context.Context, startTimes map[int64]time.Time) map[int64]*usagestats.AccountStats {
+	result := make(map[int64]*usagestats.AccountStats, len(startTimes))
+	if s == nil || s.usageLogRepo == nil || len(startTimes) == 0 {
+		return result
+	}
+
+	idsByStart := make(map[time.Time][]int64)
+	for accountID, startTime := range startTimes {
+		// 去掉单调时钟读数并统一到 UTC，保证同一时刻落进同一组。
+		key := startTime.Round(0).UTC()
+		idsByStart[key] = append(idsByStart[key], accountID)
+	}
+
+	batchReader, hasBatch := s.usageLogRepo.(accountWindowStatsBatchReader)
+	var mu sync.Mutex
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(10)
+
+	for startTime, accountIDs := range idsByStart {
+		g.Go(func() error {
+			if hasBatch {
+				statsByAccount, err := batchReader.GetAccountWindowStatsBatch(gctx, accountIDs, startTime)
+				if err == nil {
+					mu.Lock()
+					for _, accountID := range accountIDs {
+						if stats := statsByAccount[accountID]; stats != nil {
+							result[accountID] = stats
+						} else {
+							result[accountID] = &usagestats.AccountStats{}
+						}
+					}
+					mu.Unlock()
+					return nil
+				}
+			}
+			for _, accountID := range accountIDs {
+				stats, err := s.usageLogRepo.GetAccountWindowStats(gctx, accountID, startTime)
+				if err != nil || stats == nil {
+					continue
+				}
+				mu.Lock()
+				result[accountID] = stats
+				mu.Unlock()
+			}
+			return nil // 不返回错误，允许部分失败
+		})
+	}
+	_ = g.Wait()
+	return result
+}

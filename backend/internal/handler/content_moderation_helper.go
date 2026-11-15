@@ -10,6 +10,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 func contentModerationStatus(decision *service.ContentModerationDecision) int {
@@ -44,7 +45,7 @@ func runContentModeration(c *gin.Context, reqLog *zap.Logger, svc *service.Conte
 	}
 	input := buildContentModerationInput(c, apiKey, subject, protocol, model, body)
 	if reqLog != nil {
-		reqLog.Info("content_moderation.gateway_check_start",
+		reqLog.Debug("content_moderation.gateway_check_start",
 			zap.String("request_id", input.RequestID),
 			zap.Int64("user_id", input.UserID),
 			zap.Int64("api_key_id", input.APIKeyID),
@@ -66,7 +67,12 @@ func runContentModeration(c *gin.Context, reqLog *zap.Logger, svc *service.Conte
 		return nil
 	}
 	if reqLog != nil && decision != nil {
-		reqLog.Info("content_moderation.gateway_check_done",
+		// 放行且未命中的结果每个请求都会产生，只在命中或拦截时保留 Info。
+		level := zapcore.DebugLevel
+		if decision.Blocked || decision.Flagged {
+			level = zapcore.InfoLevel
+		}
+		reqLog.Log(level, "content_moderation.gateway_check_done",
 			zap.String("request_id", input.RequestID),
 			zap.Bool("allowed", decision.Allowed),
 			zap.Bool("blocked", decision.Blocked),
