@@ -120,8 +120,17 @@ export default defineConfig(({ mode }) => {
               return 'vendor-vue'
             }
 
-            // UI 工具库（较大，单独分离）
-            if (id.includes('/@vueuse/') || id.includes('/xlsx/')) {
+            // 仅通过动态 import 使用的大型库必须独占 chunk：
+            // 与被静态引用的库并入同一 chunk 会让它们随首屏一起下载。
+            if (id.includes('/xlsx/')) {
+              return 'vendor-xlsx'
+            }
+            if (id.includes('/@airwallex/')) {
+              return 'vendor-airwallex'
+            }
+
+            // UI 工具库
+            if (id.includes('/@vueuse/')) {
               return 'vendor-ui'
             }
 

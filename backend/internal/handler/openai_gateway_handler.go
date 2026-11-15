@@ -1729,9 +1729,9 @@ func normalizeCodexAutomationBootstrap(body []byte) ([]byte, bool) {
 // mayContainCodexCallOutputCandidate is a necessary condition for a bootstrap
 // candidate, checked before the full uniqueness scan and decode. Its type and
 // tool name are JSON strings, which appear literally unless a \u escape spells
-// their letters; without either, normalization cannot change the body.
+// one of their characters; without either, normalization cannot change the body.
 func mayContainCodexCallOutputCandidate(body []byte, toolNames ...string) bool {
-	if bytes.Contains(body, []byte(`\u`)) {
+	if hasUnicodeEscapeSpelling(body, "function_call_output", toolNames...) {
 		return true
 	}
 	if !bytes.Contains(body, []byte("function_call_output")) {
@@ -1743,6 +1743,42 @@ func mayContainCodexCallOutputCandidate(body []byte, toolNames ...string) bool {
 		}
 	}
 	return false
+}
+
+// hasUnicodeEscapeSpelling reports whether body holds a \uXXXX escape that
+// could spell a character of one of the needles, which would hide a needle from
+// a literal search. Escapes for other characters (\u001b, \u003c, CJK, ...) are
+// common in ordinary request bodies and cannot, so they do not count. Every \u
+// is treated as an escape, even after an escaped backslash, and a malformed one
+// counts as a match: the answer errs towards true.
+func hasUnicodeEscapeSpelling(body []byte, needle string, more ...string) bool {
+	rest := body
+	for {
+		i := bytes.Index(rest, []byte(`\u`))
+		if i < 0 {
+			return false
+		}
+		rest = rest[i+2:]
+		if len(rest) < 4 {
+			return true
+		}
+		code, err := strconv.ParseUint(string(rest[:4]), 16, 16)
+		if err != nil {
+			return true
+		}
+		if code >= utf8.RuneSelf {
+			continue
+		}
+		char := byte(code)
+		if strings.IndexByte(needle, char) >= 0 {
+			return true
+		}
+		for _, name := range more {
+			if strings.IndexByte(name, char) >= 0 {
+				return true
+			}
+		}
+	}
 }
 
 func normalizeCodexCallOutputBootstrap(body []byte, isCandidate func(map[string]any) bool, allowHistoricalContext bool) ([]byte, bool) {
